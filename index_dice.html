@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>グループチャット</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:Arial,"Noto Sans JP",sans-serif;background:#e9eef5}
+.app{width:100%;max-width:700px;height:100vh;margin:auto;background:#fff;display:flex;flex-direction:column}
+header{background:#4f7cff;color:#fff;padding:16px}
+header h1{margin:0;font-size:22px}
+#status{margin-top:5px;font-size:13px}
+.room-info{padding:15px;background:#f7f8fa;border-bottom:1px solid #ddd}
+.room-code{font-size:24px;font-weight:bold;letter-spacing:4px;color:#4f7cff;margin-top:5px}
+#messages{flex:1;overflow-y:auto;padding:18px;background:#f3f5f8}
+.system{text-align:center;color:#888;font-size:13px;margin:12px}
+.message{margin-bottom:14px}.message.mine{text-align:right}
+.name{font-size:12px;color:#666;margin-bottom:3px}
+.bubble{display:inline-block;max-width:75%;padding:10px 14px;border-radius:15px;background:#fff;word-break:break-word;box-shadow:0 1px 3px rgba(0,0,0,.08);text-align:left}
+.mine .bubble{background:#4f7cff;color:#fff}
+.input-area{display:flex;gap:8px;padding:12px;border-top:1px solid #ddd}
+#messageInput{flex:1;min-width:0;padding:12px;border:1px solid #ccc;border-radius:22px;outline:none}
+#sendButton{border:0;border-radius:22px;padding:0 18px;background:#4f7cff;color:#fff;font-weight:bold;cursor:pointer}
+#sendButton:disabled{background:#aaa}
+.start-screen{position:fixed;inset:0;background:#202b3c;display:flex;align-items:center;justify-content:center;z-index:100}
+.start-box{width:90%;max-width:400px;background:#fff;padding:28px;border-radius:18px;box-shadow:0 10px 40px rgba(0,0,0,.25)}
+.start-box h1{text-align:center;margin-top:0}.start-box h2{font-size:18px}
+.start-box input{width:100%;padding:13px;margin:6px 0 10px;border:1px solid #ccc;border-radius:9px;font-size:16px}
+.start-box button{width:100%;padding:13px;margin-top:7px;border:0;border-radius:9px;background:#4f7cff;color:#fff;font-size:16px;font-weight:bold;cursor:pointer}
+.join-section{margin-top:25px;padding-top:20px;border-top:1px solid #ddd}
+
+.dice-area{padding:10px 12px;border-top:1px solid #ddd;background:#fafbfc;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.dice-area label{font-size:13px;color:#555}
+.dice-area select{padding:8px;border:1px solid #ccc;border-radius:8px;background:#fff}
+#rollDiceButton{border:0;border-radius:18px;padding:8px 14px;background:#ff9f43;color:#fff;font-weight:bold;cursor:pointer}
+#rollDiceButton:disabled{background:#aaa}
+.dice-result{width:100%;font-size:14px;color:#333}
+.die{display:inline-block;min-width:34px;padding:6px 8px;margin:2px;border-radius:8px;background:#fff;border:1px solid #ddd;text-align:center;font-weight:bold}
+</style>
+</head>
+<body>
+
+<div class="start-screen" id="startScreen">
+  <div class="start-box">
+    <h1>💬 グループチャット</h1>
+
+    <h2>👑 グループを作る</h2>
+    <input id="hostName" placeholder="あなたの名前" maxlength="20">
+    <input id="hostPin" placeholder="暗証番号（6桁）" maxlength="6" inputmode="numeric">
+    <button onclick="createRoom()">グループを作成</button>
+
+    <div class="join-section">
+      <h2>🚪 グループに参加</h2>
+      <input id="joinName" placeholder="あなたの名前" maxlength="20">
+      <input id="joinPin" placeholder="グループの暗証番号" maxlength="6" inputmode="numeric">
+      <button onclick="joinRoom()">グループに参加</button>
+    </div>
+  </div>
+</div>
+
+<div class="app" id="app" style="display:none">
+  <header>
+    <h1>💬 グループチャット</h1>
+    <div id="status">接続準備中...</div>
+  </header>
+
+  <div class="room-info">
+    <div>グループ暗証番号</div>
+    <div class="room-code" id="roomCode">------</div>
+    <div id="memberInfo">参加者：1人</div>
+  </div>
+
+  <main id="messages">
+    <div class="system">グループチャットへようこそ！</div>
+  </main>
+
+
+  <div class="dice-area">
+    <label for="diceType">サイコロ</label>
+    <select id="diceType">
+      <option value="6">6面体</option>
+      <option value="10">10面体</option>
+    </select>
+    <label for="diceCount">個数</label>
+    <select id="diceCount">
+      <option value="1">1個</option>
+      <option value="2">2個</option>
+      <option value="3">3個</option>
+      <option value="4">4個</option>
+      <option value="5">5個</option>
+    </select>
+    <button id="rollDiceButton" onclick="rollDice()" disabled>🎲 振る</button>
+    <div class="dice-result" id="diceResult"></div>
+  </div>
+
+  <div class="input-area">
+    <input id="messageInput" placeholder="メッセージを入力..." maxlength="300" disabled>
+    <button id="sendButton" onclick="sendMessage()" disabled>送信</button>
+  </div>
+</div>
+
+<script>
+let peer=null,myName="",roomPin="",isHost=false,hostConnection=null,connections=[],memberNames={};
+
+function openApp(){
+  document.getElementById("startScreen").style.display="none";
+  document.getElementById("app").style.display="flex";
+}
+
+function createRoom(){
+  const name=document.getElementById("hostName").value.trim();
+  const pin=document.getElementById("hostPin").value.trim();
+
+  if(!name){alert("名前を入力してください。");return}
+  if(!/^[0-9]{6}$/.test(pin)){alert("暗証番号は6桁の数字にしてください。");return}
+
+  myName=name;roomPin=pin;isHost=true;
+  peer=new Peer("group-"+pin);
+
+  peer.on("open",function(){
+    openApp();
+    document.getElementById("roomCode").textContent=pin;
+    document.getElementById("status").textContent="👑 あなたがホストです";
+    memberNames[peer.id]=myName;
+    updateMembers();enableChat();
+    addSystem("グループを作成しました！");
+    addSystem("暗証番号「"+pin+"」を友達に教えてください。");
+  });
+
+  peer.on("connection",function(conn){setupHostConnection(conn)});
+
+  peer.on("error",function(error){
+    if(error.type==="unavailable-id"){
+      alert("この暗証番号はすでに使われています。別の暗証番号を選んでください。");
+      if(peer)peer.destroy();
+    }else{
+      console.log(error);addSystem("通信エラーが発生しました。");
+    }
+  });
+}
+
+function joinRoom(){
+  const name=document.getElementById("joinName").value.trim();
+  const pin=document.getElementById("joinPin").value.trim();
+
+  if(!name){alert("自分の名前を入力してください。");return}
+  if(!/^[0-9]{6}$/.test(pin)){alert("暗証番号は6桁で入力してください。");return}
+
+  myName=name;roomPin=pin;isHost=false;
+  peer=new Peer();
+
+  peer.on("open",function(){
+    openApp();
+    document.getElementById("roomCode").textContent=pin;
+    document.getElementById("status").textContent="🟡 グループに接続中...";
+
+    const conn=peer.connect("group-"+pin,{reliable:true});
+    hostConnection=conn;
+    setupGuestConnection(conn);
+  });
+
+  peer.on("error",function(error){
+    console.log(error);
+    if(error.type==="peer-unavailable"){
+      alert("そのグループが見つかりません。暗証番号を確認してください。");
+    }else{
+      alert("接続エラーが発生しました。");
+    }
+  });
+}
+
+function setupHostConnection(conn){
+  connections.push(conn);
+
+  conn.on("open",function(){
+    conn.send({type:"welcome",name:myName});
+    document.getElementById("status").textContent="🟢 グループ通信中";
+    updateMembers();
+  });
+
+  conn.on("data",function(data){handleHostData(data,conn)});
+  conn.on("close",function(){
+    connections=connections.filter(c=>c!==conn);
+    updateMembers();
+    addSystem("参加者が退出しました。");
+  });
+  conn.on("error",function(e){console.log(e)});
+}
+
+function setupGuestConnection(conn){
+  hostConnection=conn;
+
+  conn.on("open",function(){
+    conn.send({type:"join",name:myName});
+  });
+
+  conn.on("data",function(data){handleGuestData(data)});
+  conn.on("close",function(){
+    addSystem("ホストとの接続が切れました。");
+    disableChat();
+  });
+  conn.on("error",function(e){console.log(e)});
+}
+
+function handleHostData(data,conn){
+  if(data.type==="join"){
+    memberNames[conn.peer]=data.name;
+    addSystem(data.name+"さんが参加しました！");
+    broadcast({type:"system",text:data.name+"さんが参加しました！"},conn);
+    broadcast({type:"memberCount",count:connections.length+1});
+    updateMembers();
+  }
+
+  if(data.type==="message"){
+    addMessage(data.name,data.text,false);
+    broadcast({type:"message",name:data.name,text:data.text},conn);
+  }
+
+  if(data.type==="dice"){
+    showDiceResult(data);
+    broadcast(data,conn);
+  }
+}
+
+function handleGuestData(data){
+  if(data.type==="welcome"){
+    document.getElementById("status").textContent="🟢 グループに接続しました！";
+    enableChat();
+    addSystem(data.name+"さんのグループに参加しました！");
+  }
+
+  if(data.type==="message"){
+    addMessage(data.name,data.text,false);
+  }
+
+  if(data.type==="dice"){
+    showDiceResult(data);
+  }
+
+  if(data.type==="system"){
+    addSystem(data.text);
+  }
+
+  if(data.type==="memberCount"){
+    document.getElementById("memberInfo").textContent="参加者："+data.count+"人";
+  }
+}
+
+function broadcast(data,except=null){
+  connections.forEach(function(conn){
+    if(conn!==except&&conn.open)conn.send(data);
+  });
+}
+
+
+function rollDice(){
+  if(!peer){alert("まだグループに接続されていません。");return}
+
+  const sides=Number(document.getElementById("diceType").value);
+  const count=Number(document.getElementById("diceCount").value);
+  const results=[];
+
+  for(let i=0;i<count;i++){
+    results.push(Math.floor(Math.random()*sides)+1);
+  }
+
+  const data={type:"dice",name:myName,sides:sides,results:results};
+  showDiceResult(data);
+
+  if(isHost){
+    broadcast(data);
+  }else{
+    if(hostConnection&&hostConnection.open){
+      hostConnection.send(data);
+    }else{
+      alert("グループに接続されていません。");
+    }
+  }
+}
+
+function showDiceResult(data){
+  const messages=document.getElementById("messages");
+  const message=document.createElement("div");
+  message.className="system";
+
+  const title=document.createElement("div");
+  title.textContent="🎲 "+data.name+"さんが"+data.sides+"面体を"+data.results.length+"個振りました";
+  title.style.marginBottom="4px";
+
+  const result=document.createElement("div");
+  data.results.forEach(function(n){
+    const die=document.createElement("span");
+    die.className="die";
+    die.textContent=n;
+    result.appendChild(die);
+  });
+
+  message.appendChild(title);
+  message.appendChild(result);
+  messages.appendChild(message);
+  messages.scrollTop=messages.scrollHeight;
+}
+
+function sendMessage(){
+  const input=document.getElementById("messageInput");
+  const text=input.value.trim();
+  if(!text)return;
+
+  if(isHost){
+    addMessage(myName,text,true);
+    broadcast({type:"message",name:myName,text:text});
+  }else{
+    if(!hostConnection||!hostConnection.open){
+      alert("グループに接続されていません。");return;
+    }
+    hostConnection.send({type:"message",name:myName,text:text});
+    addMessage(myName,text,true);
+  }
+
+  input.value="";input.focus();
+}
+
+function addMessage(name,text,mine){
+  const messages=document.getElementById("messages");
+  const message=document.createElement("div");
+  message.className="message"+(mine?" mine":"");
+
+  const nameElement=document.createElement("div");
+  nameElement.className="name";
+  nameElement.textContent=name;
+
+  const bubble=document.createElement("div");
+  bubble.className="bubble";
+  bubble.textContent=text;
+
+  message.appendChild(nameElement);
+  message.appendChild(bubble);
+  messages.appendChild(message);
+  messages.scrollTop=messages.scrollHeight;
+}
+
+function addSystem(text){
+  const messages=document.getElementById("messages");
+  const system=document.createElement("div");
+  system.className="system";
+  system.textContent=text;
+  messages.appendChild(system);
+  messages.scrollTop=messages.scrollHeight;
+}
+
+function updateMembers(){
+  const count=isHost?connections.length+1:1;
+  document.getElementById("memberInfo").textContent="参加者："+count+"人";
+}
+
+function enableChat(){
+  document.getElementById("messageInput").disabled=false;
+  document.getElementById("sendButton").disabled=false;
+  document.getElementById("rollDiceButton").disabled=false;
+}
+
+function disableChat(){
+  document.getElementById("messageInput").disabled=true;
+  document.getElementById("sendButton").disabled=true;
+  document.getElementById("rollDiceButton").disabled=true;
+}
+
+document.getElementById("messageInput").addEventListener("keydown",function(event){
+  if(event.key==="Enter")sendMessage();
+});
+</script>
+</body>
+</html>
